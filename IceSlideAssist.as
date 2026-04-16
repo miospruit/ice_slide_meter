@@ -25,6 +25,15 @@ bool S_InvertAngleSign = false;
 [Setting name="Angle Deadzone (deg)" min=0 max=8]
 float S_AngleDeadzoneDeg = 0.6f;
 
+[Setting name="HUD Meter Max Angle (deg)" min=10 max=90]
+float S_HudMeterMaxAngleDeg = 45.0f;
+
+[Setting name="HUD Good Angle (deg)" min=1 max=45]
+float S_HudGoodAngleDeg = 12.0f;
+
+[Setting name="HUD Warn Angle (deg)" min=1 max=60]
+float S_HudWarnAngleDeg = 25.0f;
+
 [Setting name="HUD X" min=0 max=3840]
 float S_HudX = 80.0f;
 
@@ -42,10 +51,7 @@ bool g_MenuVisible = false;
 namespace ISA {
     const vec3 WORLD_UP = vec3(0.0f, 1.0f, 0.0f);
     const float MIN_PLANAR_SPEED_MS = 0.5f;
-    const float HUD_METER_MAX_ANGLE_DEG = 45.0f;
     const int HUD_METER_HALF_WIDTH = 12;
-    const float HUD_GOOD_ANGLE_DEG = 12.0f;
-    const float HUD_WARN_ANGLE_DEG = 25.0f;
 
     class SignalState {
         float speedKmh = 0.0f;
@@ -67,20 +73,18 @@ namespace ISA {
     int g_CachedRightFill = -1;
     string g_CachedMeterBar = "";
 
-    float Clamp01(float v) {
-        if (v < 0.0f) return 0.0f;
-        if (v > 1.0f) return 1.0f;
-        return v;
-    }
-
-    float Lerp(float a, float b, float t) {
-        return a + (b - a) * t;
-    }
-
     float Clamp(float v, float lo, float hi) {
         if (v < lo) return lo;
         if (v > hi) return hi;
         return v;
+    }
+
+    float Clamp01(float v) {
+        return Clamp(v, 0.0f, 1.0f);
+    }
+
+    float Lerp(float a, float b, float t) {
+        return a + (b - a) * t;
     }
 
     int ClampInt(int v, int lo, int hi) {
@@ -144,6 +148,26 @@ namespace ISA {
         return g_CachedMeterBar;
     }
 
+    string Spaces(int count) {
+        string out = "";
+        for (int i = 0; i < count; i++) {
+            out += " ";
+        }
+        return out;
+    }
+
+    string BuildMeterScaleLabel(float maxAbsDeg, int halfWidth) {
+        const int safeHalfWidth = Math::Max(1, halfWidth);
+        const float safeMax = Math::Max(1.0f, maxAbsDeg);
+        const string leftLabel = "-" + Text::Format("%.0f", safeMax);
+        const string centerLabel = "0";
+        const string rightLabel = "+" + Text::Format("%.0f", safeMax);
+
+        const int leftGap = Math::Max(1, safeHalfWidth - int(leftLabel.Length));
+        const int rightGap = Math::Max(1, safeHalfWidth - int(rightLabel.Length));
+        return leftLabel + Spaces(leftGap) + centerLabel + Spaces(rightGap) + rightLabel;
+    }
+
     void HudTextLine(const string &in text) {
         if (g_State.isActive) {
             UI::Text(text);
@@ -162,9 +186,11 @@ namespace ISA {
 
     vec4 AngleColor(float angleDeg) {
         if (!g_State.isActive) return vec4(0.65f, 0.65f, 0.65f, 1.0f);
+        const float goodThreshold = Clamp(S_HudGoodAngleDeg, 0.0f, S_HudWarnAngleDeg);
+        const float warnThreshold = Math::Max(S_HudWarnAngleDeg, goodThreshold);
         const float absAngle = Math::Abs(angleDeg);
-        if (absAngle <= HUD_GOOD_ANGLE_DEG) return vec4(0.35f, 0.95f, 0.45f, 1.0f);
-        if (absAngle <= HUD_WARN_ANGLE_DEG) return vec4(1.0f, 0.80f, 0.25f, 1.0f);
+        if (absAngle <= goodThreshold) return vec4(0.35f, 0.95f, 0.45f, 1.0f);
+        if (absAngle <= warnThreshold) return vec4(1.0f, 0.80f, 0.25f, 1.0f);
         return vec4(1.0f, 0.42f, 0.42f, 1.0f);
     }
 
@@ -222,7 +248,7 @@ namespace ISA {
     }
 
     float ComputeConfidence(const SignalState &in s) {
-        if (!s.isDriving || s.isAirborne || !s.hasSignal) return 0.0f;
+        if (!s.isDriving || s.isAirborne || !s.hasSignal || (S_OnlyShowOnIce && !s.isOnIce)) return 0.0f;
         const float speedFactor = Clamp01((s.speedKmh - S_MinSpeedKmh) / 80.0f);
         const float iceFactor = s.isOnIce ? 1.0f : 0.65f;
         const float jitter = Math::Abs(s.rawAngleDeg - s.smoothAngleDeg);
@@ -326,8 +352,10 @@ namespace ISA {
         HudTextLine("Slip: " + Text::Format("%.2f", g_State.smoothLateralSlip));
         HudTextLine("Confidence: " + Text::Format("%.2f", g_State.confidence));
 
-        const string meterBar = BuildMeterBar(g_State.smoothAngleDeg, HUD_METER_MAX_ANGLE_DEG, HUD_METER_HALF_WIDTH);
-        HudTextLine("-" + Text::Format("%.0f", HUD_METER_MAX_ANGLE_DEG) + "       0       +" + Text::Format("%.0f", HUD_METER_MAX_ANGLE_DEG));
+        const float meterMaxAngleDeg = Math::Max(1.0f, S_HudMeterMaxAngleDeg);
+        const string meterBar = BuildMeterBar(g_State.smoothAngleDeg, meterMaxAngleDeg, HUD_METER_HALF_WIDTH);
+        const string meterScale = BuildMeterScaleLabel(meterMaxAngleDeg, HUD_METER_HALF_WIDTH);
+        HudTextLine(" " + meterScale);
         HudTextLine(meterBar);
 
         if (g_State.isActive) {
