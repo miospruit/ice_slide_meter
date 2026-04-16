@@ -16,6 +16,15 @@ float S_SmoothingAlpha = 0.20f;
 [Setting name="Reset Signal When Inactive"]
 bool S_ResetWhenInactive = true;
 
+[Setting name="Only Show On Ice"]
+bool S_OnlyShowOnIce = false;
+
+[Setting name="Invert Angle Sign"]
+bool S_InvertAngleSign = false;
+
+[Setting name="Angle Deadzone (deg)" min=0 max=8]
+float S_AngleDeadzoneDeg = 0.6f;
+
 [Setting name="HUD X" min=0 max=3840]
 float S_HudX = 80.0f;
 
@@ -33,6 +42,10 @@ bool g_MenuVisible = false;
 namespace ISA {
     const vec3 WORLD_UP = vec3(0.0f, 1.0f, 0.0f);
     const float MIN_PLANAR_SPEED_MS = 0.5f;
+    const float HUD_METER_MAX_ANGLE_DEG = 45.0f;
+    const int HUD_METER_HALF_WIDTH = 12;
+    const float HUD_GOOD_ANGLE_DEG = 12.0f;
+    const float HUD_WARN_ANGLE_DEG = 25.0f;
 
     class SignalState {
         float speedKmh = 0.0f;
@@ -50,6 +63,9 @@ namespace ISA {
     }
 
     SignalState g_State;
+    int g_CachedLeftFill = -1;
+    int g_CachedRightFill = -1;
+    string g_CachedMeterBar = "";
 
     float Clamp01(float v) {
         if (v < 0.0f) return 0.0f;
@@ -61,10 +77,95 @@ namespace ISA {
         return a + (b - a) * t;
     }
 
+    float Clamp(float v, float lo, float hi) {
+        if (v < lo) return lo;
+        if (v > hi) return hi;
+        return v;
+    }
+
+    int ClampInt(int v, int lo, int hi) {
+        if (v < lo) return lo;
+        if (v > hi) return hi;
+        return v;
+    }
+
     float EffectiveAlpha(float baseAlpha, float dt) {
         const float a = Clamp01(baseAlpha);
         const float steps = Math::Max(1.0f, dt * 60.0f);
         return 1.0f - Math::Pow(1.0f - a, steps);
+    }
+
+    string BuildMeterBar(float angleDeg, float maxAbsDeg, int halfWidth) {
+        const float safeMax = Math::Max(1.0f, maxAbsDeg);
+        const float clampedAngle = Clamp(angleDeg, -safeMax, safeMax);
+        const float norm = clampedAngle / safeMax;
+
+        int leftFill = 0;
+        int rightFill = 0;
+        if (norm < 0.0f) {
+            leftFill = int(Math::Round(Math::Abs(norm) * halfWidth));
+        } else {
+            rightFill = int(Math::Round(norm * halfWidth));
+        }
+        leftFill = ClampInt(leftFill, 0, halfWidth);
+        rightFill = ClampInt(rightFill, 0, halfWidth);
+
+        if (leftFill == g_CachedLeftFill && rightFill == g_CachedRightFill) {
+            return g_CachedMeterBar;
+        }
+
+        string left = "";
+        for (int i = 0; i < halfWidth; i++) {
+            const bool isFill = i >= (halfWidth - leftFill);
+            if (!isFill) {
+                left += "-";
+            } else if (i == (halfWidth - leftFill)) {
+                left += "<";
+            } else {
+                left += "=";
+            }
+        }
+
+        string right = "";
+        for (int i = 0; i < halfWidth; i++) {
+            const bool isFill = i < rightFill;
+            if (!isFill) {
+                right += "-";
+            } else if (i == (rightFill - 1)) {
+                right += ">";
+            } else {
+                right += "=";
+            }
+        }
+
+        g_CachedLeftFill = leftFill;
+        g_CachedRightFill = rightFill;
+        g_CachedMeterBar = "[" + left + "|" + right + "]";
+        return g_CachedMeterBar;
+    }
+
+    void HudTextLine(const string &in text) {
+        if (g_State.isActive) {
+            UI::Text(text);
+        } else {
+            UI::TextDisabled(text);
+        }
+    }
+
+    void HudColoredLine(const string &in text, const vec4 &in color) {
+        if (g_State.isActive) {
+            UI::TextColored(color, text);
+        } else {
+            UI::TextDisabled(text);
+        }
+    }
+
+    vec4 AngleColor(float angleDeg) {
+        if (!g_State.isActive) return vec4(0.65f, 0.65f, 0.65f, 1.0f);
+        const float absAngle = Math::Abs(angleDeg);
+        if (absAngle <= HUD_GOOD_ANGLE_DEG) return vec4(0.35f, 0.95f, 0.45f, 1.0f);
+        if (absAngle <= HUD_WARN_ANGLE_DEG) return vec4(1.0f, 0.80f, 0.25f, 1.0f);
+        return vec4(1.0f, 0.42f, 0.42f, 1.0f);
     }
 
     float LengthSq(const vec3 &in v) {
@@ -124,7 +225,15 @@ namespace ISA {
         if (!s.isDriving || s.isAirborne || !s.hasSignal) return 0.0f;
         const float speedFactor = Clamp01((s.speedKmh - S_MinSpeedKmh) / 80.0f);
         const float iceFactor = s.isOnIce ? 1.0f : 0.65f;
-        return Clamp01(speedFactor * iceFactor);
+        const float jitter = Math::Abs(s.rawAngleDeg - s.smoothAngleDeg);
+        const float jitterFactor = 1.0f - Clamp01(jitter / 25.0f);
+        return Clamp01(speedFactor * iceFactor * jitterFactor);
+    }
+
+    float ApplyDeadzone(float angleDeg, float deadzoneDeg) {
+        const float dz = Math::Max(0.0f, deadzoneDeg);
+        if (Math::Abs(angleDeg) <= dz) return 0.0f;
+        return angleDeg;
     }
 
     void Tick(float dt) {
@@ -157,14 +266,17 @@ namespace ISA {
         g_State.isOnIce = isOnIce;
 
         if (hasInputs) {
-            g_State.rawAngleDeg = SignedAngleDeg(planarForward, planarVelDir, WORLD_UP);
+            float signedAngle = SignedAngleDeg(planarForward, planarVelDir, WORLD_UP);
+            if (S_InvertAngleSign) signedAngle = -signedAngle;
+            g_State.rawAngleDeg = ApplyDeadzone(signedAngle, S_AngleDeadzoneDeg);
             g_State.hasSignal = true;
         } else {
             g_State.rawAngleDeg = 0.0f;
         }
 
         const bool speedOk = g_State.speedKmh >= S_MinSpeedKmh;
-        const bool stateOk = g_State.isDriving && !g_State.isAirborne && g_State.hasSignal;
+        const bool surfaceOk = !S_OnlyShowOnIce || g_State.isOnIce;
+        const bool stateOk = g_State.isDriving && !g_State.isAirborne && g_State.hasSignal && surfaceOk;
         g_State.isActive = stateOk && speedOk;
 
         if (!g_State.isDriving) {
@@ -173,6 +285,8 @@ namespace ISA {
             g_State.inactiveReason = "airborne";
         } else if (!g_State.hasSignal) {
             g_State.inactiveReason = "low planar velocity";
+        } else if (!surfaceOk) {
+            g_State.inactiveReason = "not on ice";
         } else if (!speedOk) {
             g_State.inactiveReason = "below min speed";
         }
@@ -194,7 +308,7 @@ namespace ISA {
         if (!S_EnableHud) return;
 
         UI::SetNextWindowPos(int(S_HudX), int(S_HudY), UI::Cond::Always);
-        UI::SetNextWindowSize(int(260 * S_HudScale), int(130 * S_HudScale), UI::Cond::Always);
+        UI::SetNextWindowSize(int(340 * S_HudScale), int(160 * S_HudScale), UI::Cond::Always);
 
         int flags = UI::WindowFlags::NoTitleBar | UI::WindowFlags::NoResize | UI::WindowFlags::NoMove;
         flags |= UI::WindowFlags::NoCollapse | UI::WindowFlags::NoSavedSettings;
@@ -204,17 +318,22 @@ namespace ISA {
             return;
         }
 
-        UI::Text("ICE");
+        HudTextLine("ICE");
         if (S_ShowNumericAngle) {
-            UI::Text("Angle: " + Text::Format("%+.1f deg", g_State.smoothAngleDeg));
+            HudColoredLine("Angle: " + Text::Format("%+.1f deg", g_State.smoothAngleDeg), AngleColor(g_State.smoothAngleDeg));
         }
-        UI::Text("Speed: " + Text::Format("%.1f km/h", g_State.speedKmh));
-        UI::Text("Slip: " + Text::Format("%.2f", g_State.smoothLateralSlip));
-        UI::Text("Confidence: " + Text::Format("%.2f", g_State.confidence));
+        HudTextLine("Speed: " + Text::Format("%.1f km/h", g_State.speedKmh));
+        HudTextLine("Slip: " + Text::Format("%.2f", g_State.smoothLateralSlip));
+        HudTextLine("Confidence: " + Text::Format("%.2f", g_State.confidence));
+
+        const string meterBar = BuildMeterBar(g_State.smoothAngleDeg, HUD_METER_MAX_ANGLE_DEG, HUD_METER_HALF_WIDTH);
+        HudTextLine("-" + Text::Format("%.0f", HUD_METER_MAX_ANGLE_DEG) + "       0       +" + Text::Format("%.0f", HUD_METER_MAX_ANGLE_DEG));
+        HudTextLine(meterBar);
+
         if (g_State.isActive) {
-            UI::Text("Active");
+            UI::Text("State: active");
         } else {
-            UI::Text("Inactive: " + g_State.inactiveReason);
+            UI::TextDisabled("State: inactive (" + g_State.inactiveReason + ")");
         }
 
         UI::End();
@@ -230,6 +349,8 @@ namespace ISA {
             UI::Text("Airborne: " + (g_State.isAirborne ? "yes" : "no"));
             UI::Text("On Ice: " + (g_State.isOnIce ? "yes" : "no"));
             UI::Text("Has Signal: " + (g_State.hasSignal ? "yes" : "no"));
+            UI::Text("Show On Ice: " + (S_OnlyShowOnIce ? "yes" : "no"));
+            UI::Text("Invert Sign: " + (S_InvertAngleSign ? "yes" : "no"));
             UI::Text("Inactive reason: " + g_State.inactiveReason);
             UI::Text("Raw angle: " + Text::Format("%+.2f", g_State.rawAngleDeg));
             UI::Text("Smoothed angle: " + Text::Format("%+.2f", g_State.smoothAngleDeg));
