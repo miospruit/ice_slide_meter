@@ -1,0 +1,9 @@
+[meta]
+name = "Ice Slide Assist"
+author = "mio.spruit"
+category = "Race"
+version = "0.1.0"
+siteid = 0
+
+[script]
+dependencies = [ "VehicleState" ]
