@@ -73,7 +73,7 @@ Exit criteria:
 
 ### Phase 3: HUD completion
 
-Status: next
+Status: done
 
 Tasks:
 - Replace text shell with compact meter UI:
@@ -90,6 +90,8 @@ Exit criteria:
 - Responsive without clutter
 
 ### Phase 4: Validation and packaging
+
+Status: next
 
 Tasks:
 - Validate against `docs/v1-test-checklist.md`
