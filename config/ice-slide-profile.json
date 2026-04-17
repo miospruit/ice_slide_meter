@@ -1,0 +1,86 @@
+{
+  "profile": {
+    "name": "v2-default-ice-slide",
+    "description": "Baseline tuning profile for controlled Trackmania ice slides.",
+    "version": 1
+  },
+  "telemetry": {
+    "speed": {
+      "min_active_kmh": 40.0
+    },
+    "surface": {
+      "only_show_on_ice": false
+    },
+    "smoothing": {
+      "alpha": 0.2,
+      "reset_when_inactive": true
+    }
+  },
+  "slide": {
+    "angle": {
+      "target_min_deg": 15.0,
+      "target_max_deg": 30.0,
+      "under_slide_deg": 10.0,
+      "over_slide_deg": 40.0
+    },
+    "speed": {
+      "max_loss_kmh_per_sec": 22.0
+    },
+    "stability": {
+      "max_oscillation_deg_per_sec": 140.0,
+      "yaw_rate": {
+        "target_min_deg_per_sec": 25.0,
+        "target_max_deg_per_sec": 120.0,
+        "oversteer_deg_per_sec": 180.0
+      }
+    },
+    "trajectory": {
+      "direction_velocity_mismatch": {
+        "min_slide_deg": 10.0,
+        "optimal_min_deg": 15.0,
+        "optimal_max_deg": 30.0,
+        "max_controlled_deg": 40.0
+      }
+    },
+    "gear": {
+      "prefer_higher_gear_stability": true,
+      "penalize_mid_slide_shift": true
+    },
+    "inputs": {
+      "prefer_small_steering": true,
+      "prefer_steady_throttle": true,
+      "brake_usage_expected_low": true
+    },
+    "terrain": {
+      "uphill": {
+        "allow_extra_angle_deg": 2.5,
+        "speed_loss_tolerance_multiplier": 1.12
+      },
+      "downhill": {
+        "reduce_target_angle_deg": 2.0,
+        "increase_speed_loss_penalty": 1.15
+      }
+    },
+    "surface": {
+      "transition": {
+        "road_to_ice_unstable_window_s": 0.8,
+        "ice_to_road_regrip_window_s": 0.7
+      }
+    },
+    "phases": {
+      "entry": {
+        "description": "Create angle quickly but controllably",
+        "target_angle_ramp_deg_per_sec": 110.0
+      },
+      "mid": {
+        "description": "Hold stable angle with minimal speed loss",
+        "angle_hold_tolerance_deg": 3.0,
+        "max_speed_drop_kmh_per_sec": 18.0
+      },
+      "exit": {
+        "description": "Reduce angle smoothly and regain grip",
+        "target_angle_decay_deg_per_sec": 85.0
+      }
+    }
+  }
+}
