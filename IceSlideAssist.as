@@ -436,11 +436,14 @@ namespace ISA {
         );
     }
 
-    int NextGhostByte(const string &in raw, int &inout cursor) {
+    int NextGhostByte(const string &in raw, int cursor, int &out nextCursor) {
         const int len = int(raw.Length);
-        if (len <= 0) return 0;
+        if (len <= 0) {
+            nextCursor = 0;
+            return 0;
+        }
         const int idx = (cursor % len + len) % len;
-        cursor = (idx + 1) % len;
+        nextCursor = (idx + 1) % len;
         return int(raw[idx]);
     }
 
@@ -586,32 +589,32 @@ namespace ISA {
         const int frameCount = ClampInt(dataLen / 3, 240, 1800);
 
         int cursor = 0;
-        float simSpeedKmh = 80.0f + (NextGhostByte(raw, cursor) / 255.0f) * 110.0f;
+        float simSpeedKmh = 80.0f + (NextGhostByte(raw, cursor, cursor) / 255.0f) * 110.0f;
         float simAngleDeg = 0.0f;
         float simSlip = 0.0f;
-        int slideSign = NextGhostByte(raw, cursor) > 127 ? 1 : -1;
-        int phaseFramesLeft = 40 + (NextGhostByte(raw, cursor) % 80);
+        int slideSign = NextGhostByte(raw, cursor, cursor) > 127 ? 1 : -1;
+        int phaseFramesLeft = 40 + (NextGhostByte(raw, cursor, cursor) % 80);
         bool inSlidePhase = false;
         float targetAbsAngle = 0.0f;
         float targetSpeedKmh = simSpeedKmh;
 
         for (int i = 0; i < frameCount; i++) {
             if (phaseFramesLeft <= 0) {
-                const int phaseSelector = NextGhostByte(raw, cursor);
+                const int phaseSelector = NextGhostByte(raw, cursor, cursor);
                 inSlidePhase = phaseSelector > 70;
                 if (inSlidePhase) {
-                    const int signSelector = NextGhostByte(raw, cursor);
+                    const int signSelector = NextGhostByte(raw, cursor, cursor);
                     if (signSelector > 90) {
                         slideSign = signSelector > 170 ? 1 : -1;
                     }
-                    const float shape = NextGhostByte(raw, cursor) / 255.0f;
+                    const float shape = NextGhostByte(raw, cursor, cursor) / 255.0f;
                     targetAbsAngle = 12.0f + shape * 22.0f;
-                    targetSpeedKmh = 90.0f + (NextGhostByte(raw, cursor) / 255.0f) * 140.0f;
-                    phaseFramesLeft = 90 + (NextGhostByte(raw, cursor) % 220);
+                    targetSpeedKmh = 90.0f + (NextGhostByte(raw, cursor, cursor) / 255.0f) * 140.0f;
+                    phaseFramesLeft = 90 + (NextGhostByte(raw, cursor, cursor) % 220);
                 } else {
-                    targetAbsAngle = (NextGhostByte(raw, cursor) / 255.0f) * 5.0f;
-                    targetSpeedKmh = 70.0f + (NextGhostByte(raw, cursor) / 255.0f) * 120.0f;
-                    phaseFramesLeft = 25 + (NextGhostByte(raw, cursor) % 95);
+                    targetAbsAngle = (NextGhostByte(raw, cursor, cursor) / 255.0f) * 5.0f;
+                    targetSpeedKmh = 70.0f + (NextGhostByte(raw, cursor, cursor) / 255.0f) * 120.0f;
+                    phaseFramesLeft = 25 + (NextGhostByte(raw, cursor, cursor) % 95);
                 }
             }
 
@@ -625,17 +628,17 @@ namespace ISA {
             simSpeedKmh = Lerp(simSpeedKmh, targetSpeedKmh, 0.04f);
             simSlip = Lerp(simSlip, (simAngleDeg / 45.0f) * 5.0f, 0.11f);
 
-            const bool rareAirborne = NextGhostByte(raw, cursor) > 252;
-            const bool hasNoiseSignal = NextGhostByte(raw, cursor) > 8;
+            const bool rareAirborne = NextGhostByte(raw, cursor, cursor) > 252;
+            const bool hasNoiseSignal = NextGhostByte(raw, cursor, cursor) > 8;
 
             GhostFrame@ frame = GhostFrame();
             frame.speedKmh = Clamp(simSpeedKmh, 20.0f, 260.0f);
             frame.rawAngleDeg = Clamp(simAngleDeg, -48.0f, 48.0f);
             frame.lateralSlip = Clamp(simSlip, -7.0f, 7.0f);
-            frame.isOnIce = inSlidePhase || NextGhostByte(raw, cursor) > 15;
+            frame.isOnIce = inSlidePhase || NextGhostByte(raw, cursor, cursor) > 15;
             frame.isAirborne = !inSlidePhase && rareAirborne;
             frame.hasSignal = frame.speedKmh > 24.0f && (inSlidePhase || hasNoiseSignal || Math::Abs(frame.rawAngleDeg) > 0.6f);
-            frame.isDriving = NextGhostByte(raw, cursor) > 1;
+            frame.isDriving = NextGhostByte(raw, cursor, cursor) > 1;
 
             if (Math::Abs(frame.rawAngleDeg) < 0.4f) {
                 frame.rawAngleDeg = 0.0f;
@@ -844,14 +847,8 @@ namespace ISA {
         return Math::Abs(a - b) <= eps;
     }
 
-    void AppendTestResult(bool ok, const string &in label, int &inout passCount, int &inout failCount, string &inout report) {
-        if (ok) {
-            passCount++;
-            report += "PASS: " + label + "\n";
-        } else {
-            failCount++;
-            report += "FAIL: " + label + "\n";
-        }
+    string TestResultLine(bool ok, const string &in label) {
+        return (ok ? "PASS: " : "FAIL: ") + label + "\n";
     }
 
     void RunOfflineSelfTests() {
@@ -866,16 +863,26 @@ namespace ISA {
             const float a0 = SignedAngleDeg(fromDir, fromDir, WORLD_UP);
             const float ar = SignedAngleDeg(fromDir, right45, WORLD_UP);
             const float al = SignedAngleDeg(fromDir, left45, WORLD_UP);
-            AppendTestResult(AlmostEqual(a0, 0.0f, 0.01f), "SignedAngle straight ~= 0", passCount, failCount, report);
-            AppendTestResult(AlmostEqual(ar, 45.0f, 0.01f), "SignedAngle right ~= +45", passCount, failCount, report);
-            AppendTestResult(AlmostEqual(al, -45.0f, 0.01f), "SignedAngle left ~= -45", passCount, failCount, report);
+            const bool okA0 = AlmostEqual(a0, 0.0f, 0.01f);
+            const bool okAr = AlmostEqual(ar, 45.0f, 0.01f);
+            const bool okAl = AlmostEqual(al, -45.0f, 0.01f);
+            if (okA0) passCount++; else failCount++;
+            if (okAr) passCount++; else failCount++;
+            if (okAl) passCount++; else failCount++;
+            report += TestResultLine(okA0, "SignedAngle straight ~= 0");
+            report += TestResultLine(okAr, "SignedAngle right ~= +45");
+            report += TestResultLine(okAl, "SignedAngle left ~= -45");
         }
 
         {
             const float dz0 = ApplyDeadzone(0.4f, 0.6f);
             const float dz1 = ApplyDeadzone(1.2f, 0.6f);
-            AppendTestResult(AlmostEqual(dz0, 0.0f, 0.0001f), "Deadzone suppresses small angle", passCount, failCount, report);
-            AppendTestResult(AlmostEqual(dz1, 1.2f, 0.0001f), "Deadzone keeps large angle", passCount, failCount, report);
+            const bool okDz0 = AlmostEqual(dz0, 0.0f, 0.0001f);
+            const bool okDz1 = AlmostEqual(dz1, 1.2f, 0.0001f);
+            if (okDz0) passCount++; else failCount++;
+            if (okDz1) passCount++; else failCount++;
+            report += TestResultLine(okDz0, "Deadzone suppresses small angle");
+            report += TestResultLine(okDz1, "Deadzone keeps large angle");
         }
 
         {
@@ -898,9 +905,15 @@ namespace ISA {
             i.prevSmoothLateralSlip = 0.5f;
 
             FrameOutput o = EvaluateFrame(i, c);
-            AppendTestResult(o.isActive, "EvaluateFrame marks active state", passCount, failCount, report);
-            AppendTestResult(o.smoothAngleDeg > i.prevSmoothAngleDeg, "EvaluateFrame smooth angle moves toward raw", passCount, failCount, report);
-            AppendTestResult(o.confidence > 0.0f, "EvaluateFrame confidence positive when valid", passCount, failCount, report);
+            const bool okActive = o.isActive;
+            const bool okSmooth = o.smoothAngleDeg > i.prevSmoothAngleDeg;
+            const bool okConfidence = o.confidence > 0.0f;
+            if (okActive) passCount++; else failCount++;
+            if (okSmooth) passCount++; else failCount++;
+            if (okConfidence) passCount++; else failCount++;
+            report += TestResultLine(okActive, "EvaluateFrame marks active state");
+            report += TestResultLine(okSmooth, "EvaluateFrame smooth angle moves toward raw");
+            report += TestResultLine(okConfidence, "EvaluateFrame confidence positive when valid");
         }
 
         {
@@ -923,8 +936,12 @@ namespace ISA {
             i.prevSmoothLateralSlip = 0.8f;
 
             FrameOutput o = EvaluateFrame(i, c);
-            AppendTestResult(!o.isActive, "EvaluateFrame inactive when not on ice and below speed", passCount, failCount, report);
-            AppendTestResult(o.confidence <= 0.001f, "EvaluateFrame confidence near zero for invalid state", passCount, failCount, report);
+            const bool okInactive = !o.isActive;
+            const bool okLowConfidence = o.confidence <= 0.001f;
+            if (okInactive) passCount++; else failCount++;
+            if (okLowConfidence) passCount++; else failCount++;
+            report += TestResultLine(okInactive, "EvaluateFrame inactive when not on ice and below speed");
+            report += TestResultLine(okLowConfidence, "EvaluateFrame confidence near zero for invalid state");
         }
 
         g_SelfTestsPassed = failCount == 0;
