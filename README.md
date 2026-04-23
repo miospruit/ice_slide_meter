@@ -11,6 +11,8 @@ V1 goal: ship a reliable signed ice-slide telemetry meter before any coaching or
 - Branch polish pass added robustness/perf/visual refinements (deadzone, optional ice-only gate, sign inversion toggle, jitter-aware confidence, cached meter bar rendering, angle severity coloring).
 - Added optional ghost replay test mode that feeds deterministic synthetic frames from a `.Ghost.gbx` file into the same core evaluator and debug visuals.
 - Added optional V2 coaching gauge layer (slide state + angle/speed/stability scores + efficiency) in HUD/debug output and offline preview script.
+- Added circular nvg gauge with color-coded zones, needle, and coaching hints.
+- Added state hysteresis to prevent slide-state flickering.
 
 ## Planned V1 deliverable
 

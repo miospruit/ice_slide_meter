@@ -85,12 +85,24 @@ float S_V2MaxSpeedLossKmhPerSec = 22.0f;
 [Setting name="V2 Max Angle Oscillation (deg/s)" min=10 max=360]
 float S_V2MaxOscillationDegPerSec = 140.0f;
 
-bool g_MenuVisible = false;
+[Setting name="Use Circular Gauge"]
+bool S_UseCircularGauge = true;
+
+[Setting name="Show Coaching Hints"]
+bool S_ShowCoachingHints = true;
+
+[Setting name="Gauge Size" min=80 max=400]
+float S_GaugeSize = 160.0f;
 
 namespace ISA {
     const vec3 WORLD_UP = vec3(0.0f, 1.0f, 0.0f);
     const float MIN_PLANAR_SPEED_MS = 0.5f;
     const int HUD_METER_HALF_WIDTH = 12;
+    const int STATE_HYSTERESIS_FRAMES = 6;
+
+    float DegToRad(float degrees) {
+        return degrees * Math::PI / 180.0f;
+    }
 
     class SignalState {
         float speedKmh = 0.0f;
@@ -113,6 +125,8 @@ namespace ISA {
         bool isActive = false;
         bool hasSignal = false;
         string inactiveReason = "";
+        string pendingSlideState = "";
+        uint stateChangeTimer = 0;
     }
 
     class CoreConfig {
@@ -407,11 +421,14 @@ namespace ISA {
 
         if (stabilityScore < 0.30f) return "Unstable";
         if (absAngle > over && speedDeltaKmhPerSec < -6.0f) return "OverSlide";
-        if (absAngle < under) {
-            if (absAngle > prevAbsAngle + 0.3f) return "Entry";
-            return "UnderSlide";
-        }
-        if (prevAbsAngle > targetMin && absAngle < targetMin && absAngle < prevAbsAngle) return "Exit";
+
+        // Entry: transitioning from below under-threshold toward target zone
+        if (prevAbsAngle < under && absAngle >= under && absAngle < targetMin) return "Entry";
+        if (absAngle < under) return "UnderSlide";
+
+        // Exit: transitioning from target zone back to low angle
+        if (prevAbsAngle >= targetMin && absAngle < targetMin) return "Exit";
+
         if (absAngle >= targetMin && absAngle <= targetMax && angleScore > 0.8f && speedScore > 0.45f && stabilityScore > 0.45f) {
             return "SlideGood";
         }
@@ -1049,11 +1066,197 @@ namespace ISA {
         g_State.speedScore = out.speedScore;
         g_State.stabilityScore = out.stabilityScore;
         g_State.efficiencyScore = out.efficiencyScore;
-        g_State.slideState = out.slideState;
+
+        // Apply state hysteresis to prevent flickering
+        const string rawState = out.slideState;
+        if (rawState != g_State.slideState) {
+            if (rawState != g_State.pendingSlideState) {
+                g_State.pendingSlideState = rawState;
+                g_State.stateChangeTimer = 0;
+            } else {
+                g_State.stateChangeTimer++;
+                if (g_State.stateChangeTimer >= STATE_HYSTERESIS_FRAMES) {
+                    g_State.slideState = rawState;
+                    g_State.pendingSlideState = "";
+                    g_State.stateChangeTimer = 0;
+                }
+            }
+        } else {
+            g_State.pendingSlideState = "";
+            g_State.stateChangeTimer = 0;
+        }
+    }
+
+    void DrawGaugeArc(vec2 center, float radius, float startDeg, float endDeg, float width, vec4 color) {
+        nvg::BeginPath();
+        nvg::StrokeColor(color);
+        nvg::StrokeWidth(width);
+        nvg::Arc(center, radius, DegToRad(startDeg), DegToRad(endDeg), nvg::Winding::CCW);
+        nvg::Stroke();
+        nvg::ClosePath();
+    }
+
+    void DrawGaugeZone(vec2 center, float radius, float width, float innerAngle, float outerAngle, vec4 color, float maxAngle) {
+        if (innerAngle >= outerAngle || innerAngle < 0.0f) return;
+        if (outerAngle > maxAngle) outerAngle = maxAngle;
+
+        // Right side zone [+innerAngle, +outerAngle]
+        DrawGaugeArc(center, radius, 90.0f - innerAngle, 90.0f - outerAngle, width, color);
+        // Left side zone [-outerAngle, -innerAngle]
+        DrawGaugeArc(center, radius, 90.0f + outerAngle, 90.0f + innerAngle, width, color);
+    }
+
+    string GetCoachingHint(const string &in state) {
+        if (state == "UnderSlide") return "MORE ANGLE";
+        if (state == "OverSlide") return "LESS ANGLE";
+        if (state == "SlideGood") return "HOLD";
+        if (state == "Unstable") return "STABILIZE";
+        if (state == "Entry") return "ENTERING";
+        if (state == "Exit") return "EXITING";
+        return "";
+    }
+
+    void RenderGauge() {
+        if (!S_EnableHud) return;
+        if (!g_State.isDriving && S_OnlyShowWhileDriving) return;
+        if (S_OnlyShowOnIce && !g_State.isOnIce) return;
+
+        float scale = S_HudScale;
+        float gaugeSize = S_GaugeSize * scale;
+        float centerX = S_HudX + gaugeSize * 0.5f;
+        float centerY = S_HudY + gaugeSize * 0.65f;
+        float radius = gaugeSize * 0.38f;
+        float arcWidth = 7.0f * scale;
+        vec2 center = vec2(centerX, centerY);
+
+        float maxAngleDeg = Math::Max(5.0f, S_HudMeterMaxAngleDeg);
+        float opacity = g_State.isActive ? 1.0f : 0.35f;
+
+        // Background arc (full semicircle)
+        vec4 bgColor = vec4(0.10f, 0.10f, 0.12f, 0.85f * opacity);
+        DrawGaugeArc(center, radius, 90.0f + maxAngleDeg, 90.0f - maxAngleDeg, arcWidth, bgColor);
+
+        // Zone arcs (color bands showing good/bad ranges)
+        float dz = Math::Max(0.0f, S_AngleDeadzoneDeg);
+        float under = Math::Max(dz + 0.1f, S_V2UnderSlideAngleDeg);
+        float targetMin = Math::Max(under, S_V2TargetAngleMinDeg);
+        float targetMax = Math::Max(targetMin, S_V2TargetAngleMaxDeg);
+        float over = Math::Max(targetMax + 0.1f, S_V2OverSlideAngleDeg);
+
+        // Deadzone (neutral gray)
+        if (dz > 0.0f) {
+            DrawGaugeZone(center, radius, arcWidth, 0.0f, dz, vec4(0.5f, 0.5f, 0.5f, 0.3f * opacity), maxAngleDeg);
+        }
+        // Under-slide zone (yellow)
+        DrawGaugeZone(center, radius, arcWidth, under, targetMin, vec4(0.95f, 0.75f, 0.20f, 0.45f * opacity), maxAngleDeg);
+        // Target zone (green)
+        DrawGaugeZone(center, radius, arcWidth, targetMin, targetMax, vec4(0.30f, 0.90f, 0.40f, 0.55f * opacity), maxAngleDeg);
+        // Over-slide zone (orange)
+        DrawGaugeZone(center, radius, arcWidth, targetMax, over, vec4(1.0f, 0.55f, 0.20f, 0.45f * opacity), maxAngleDeg);
+        // Extreme zone (red)
+        DrawGaugeZone(center, radius, arcWidth, over, maxAngleDeg, vec4(1.0f, 0.25f, 0.25f, 0.40f * opacity), maxAngleDeg);
+
+        // Value arc (current angle indicator)
+        if (g_State.isActive && Math::Abs(g_State.smoothAngleDeg) > dz) {
+            float angleDeg = Clamp(g_State.smoothAngleDeg, -maxAngleDeg, maxAngleDeg);
+            vec4 valueColor = AngleColor(angleDeg);
+            valueColor.w = 0.9f * opacity;
+
+            nvg::BeginPath();
+            nvg::StrokeColor(valueColor);
+            nvg::StrokeWidth(arcWidth * 1.3f);
+            nvg::Arc(center, radius, DegToRad(90.0f), DegToRad(90.0f - angleDeg), nvg::Winding::CCW);
+            nvg::Stroke();
+            nvg::ClosePath();
+        }
+
+        // Needle
+        if (g_State.isActive || Math::Abs(g_State.smoothAngleDeg) > 0.5f) {
+            float angleDeg = Clamp(g_State.smoothAngleDeg, -maxAngleDeg, maxAngleDeg);
+            float nvgAngleRad = DegToRad(90.0f - angleDeg);
+            float needleLen = radius * 0.82f;
+            float needleWidth = 2.0f * scale;
+
+            vec2 needleEnd = vec2(
+                center.x + needleLen * Math::Cos(nvgAngleRad),
+                center.y + needleLen * Math::Sin(nvgAngleRad)
+            );
+
+            nvg::BeginPath();
+            nvg::StrokeColor(vec4(1.0f, 1.0f, 1.0f, 0.95f * opacity));
+            nvg::StrokeWidth(needleWidth);
+            nvg::MoveTo(center);
+            nvg::LineTo(needleEnd);
+            nvg::Stroke();
+            nvg::ClosePath();
+        }
+
+        // Center pivot
+        nvg::BeginPath();
+        nvg::Circle(center, 4.5f * scale);
+        nvg::FillColor(vec4(0.9f, 0.9f, 0.9f, 1.0f * opacity));
+        nvg::Fill();
+        nvg::ClosePath();
+
+        // Tick marks at key angles
+        float tickInner = radius * 0.88f;
+        float tickOuter = radius * 1.02f;
+        float tickWidth = 1.5f * scale;
+        vec4 tickColor = vec4(0.6f, 0.6f, 0.6f, 0.7f * opacity);
+
+        // Zero tick
+        vec2 zIn = vec2(center.x + tickInner * Math::Cos(DegToRad(90.0f)), center.y + tickInner * Math::Sin(DegToRad(90.0f)));
+        vec2 zOut = vec2(center.x + tickOuter * Math::Cos(DegToRad(90.0f)), center.y + tickOuter * Math::Sin(DegToRad(90.0f)));
+        nvg::BeginPath();
+        nvg::StrokeColor(tickColor);
+        nvg::StrokeWidth(tickWidth * 1.5f);
+        nvg::MoveTo(zIn);
+        nvg::LineTo(zOut);
+        nvg::Stroke();
+        nvg::ClosePath();
+
+        // Angle number (large, centered below gauge)
+        nvg::TextAlign(nvg::Align::Center | nvg::Align::Top);
+        nvg::FontSize(28.0f * scale);
+        string angleText = g_State.isActive
+            ? Text::Format("%+.0f", g_State.smoothAngleDeg) + "\xb0"
+            : "--\xb0";
+        vec4 textColor = g_State.isActive ? AngleColor(g_State.smoothAngleDeg) : vec4(0.5f, 0.5f, 0.5f, opacity);
+        nvg::FillColor(textColor);
+        nvg::Text(center.x, center.y + radius * 0.35f, angleText);
+
+        // State label
+        nvg::FontSize(14.0f * scale);
+        vec4 stateColor = SlideStateColor(g_State.slideState);
+        stateColor.w *= opacity;
+        nvg::FillColor(stateColor);
+        nvg::Text(center.x, center.y + radius * 0.35f + 32.0f * scale, g_State.slideState);
+
+        // Coaching hint
+        if (S_ShowCoachingHints && g_State.isActive) {
+            string hint = GetCoachingHint(g_State.slideState);
+            if (hint.Length > 0) {
+                nvg::FontSize(12.0f * scale);
+                nvg::FillColor(vec4(0.85f, 0.85f, 0.85f, 0.9f * opacity));
+                nvg::Text(center.x, center.y + radius * 0.35f + 50.0f * scale, hint);
+            }
+        }
+
+        // Inactive reason
+        if (!g_State.isActive && g_State.inactiveReason.Length > 0) {
+            nvg::FontSize(11.0f * scale);
+            nvg::FillColor(vec4(0.5f, 0.5f, 0.5f, 0.7f * opacity));
+            nvg::Text(center.x, center.y + radius * 0.35f + 50.0f * scale, g_State.inactiveReason);
+        }
     }
 
     void RenderHud() {
         if (!S_EnableHud) return;
+
+        if (S_UseCircularGauge) {
+            RenderGauge();
+            return;
+        }
 
         UI::SetNextWindowPos(int(S_HudX), int(S_HudY), UI::Cond::Always);
         const int hudHeight = S_EnableV2Gauge ? 280 : 160;
@@ -1215,7 +1418,7 @@ void RenderInterface() {
 }
 
 void RenderMenu() {
-    if (UI::MenuItem("Ice Slide Assist", "", g_MenuVisible)) {
-        g_MenuVisible = !g_MenuVisible;
+    if (UI::MenuItem("Ice Slide Assist", "", S_EnableHud)) {
+        S_EnableHud = !S_EnableHud;
     }
 }

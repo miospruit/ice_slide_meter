@@ -18,6 +18,9 @@ Status: V1 implementation complete, Phase 4 validation pending.
 - Debug window with telemetry and gate diagnostics
 - Core frame evaluator split (`EvaluateFrame`) for deterministic logic testing
 - Built-in offline self-test harness in debug window
+- Circular nvg gauge with color-coded angle zones and needle
+- Coaching hints (More Angle / Less Angle / Hold / Stabilize)
+- State hysteresis to prevent flickering between slide states
 
 ## What we can do now
 
@@ -26,6 +29,7 @@ Status: V1 implementation complete, Phase 4 validation pending.
 - Run with configurable HUD scale/position and tuning thresholds
 - Support manual testing and calibration without prediction/coaching layers
 - Run offline deterministic self-tests before in-game validation passes
+- See live coaching hints via circular gauge with color-coded angle zones
 
 ## Remaining roadmap
 
@@ -37,8 +41,8 @@ Status: V1 implementation complete, Phase 4 validation pending.
 
 ### V2 (coaching/training overlay)
 
-1. `task-1776343057935-kaw5ut` (normal): target-band model + live classification
-2. `task-1776343057949-x8yn8f` (normal): trend indicator + short history graph
+1. `task-1776343057935-kaw5ut` (normal): target-band model + live classification — partially implemented with circular gauge zones
+2. `task-1776343057949-x8yn8f` (normal): trend indicator + short history graph — pending
 
 ### V3 (prediction/path helper)
 

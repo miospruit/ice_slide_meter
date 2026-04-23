@@ -269,6 +269,12 @@ def score_stability(angle_oscillation_deg_per_sec: float, config: CoreConfig) ->
     return clamp01(1.0 - angle_oscillation_deg_per_sec / max_osc)
 
 
+STATE_HYSTERESIS_FRAMES = 6
+_g_pending_state = ""
+_g_state_timer = 0
+_g_last_state = "Inactive"
+
+
 def classify_slide_state(
     is_active: bool,
     smooth_angle_deg: float,
@@ -279,34 +285,54 @@ def classify_slide_state(
     stability_score: float,
     config: CoreConfig,
 ) -> str:
+    global _g_pending_state, _g_state_timer, _g_last_state
+
     if not is_active:
-        return "Inactive"
+        raw = "Inactive"
+    else:
+        abs_angle = abs(smooth_angle_deg)
+        prev_abs_angle = abs(prev_smooth_angle_deg)
+        target_min = max(0.0, config.v2_target_angle_min_deg)
+        target_max = max(target_min, config.v2_target_angle_max_deg)
+        under = max(0.0, config.v2_under_slide_angle_deg)
+        over = max(target_max, config.v2_over_slide_angle_deg)
 
-    abs_angle = abs(smooth_angle_deg)
-    prev_abs_angle = abs(prev_smooth_angle_deg)
-    target_min = max(0.0, config.v2_target_angle_min_deg)
-    target_max = max(target_min, config.v2_target_angle_max_deg)
-    under = max(0.0, config.v2_under_slide_angle_deg)
-    over = max(target_max, config.v2_over_slide_angle_deg)
+        if stability_score < 0.30:
+            raw = "Unstable"
+        elif abs_angle > over and speed_delta_kmh_per_sec < -6.0:
+            raw = "OverSlide"
+        elif prev_abs_angle < under and abs_angle >= under and abs_angle < target_min:
+            raw = "Entry"
+        elif abs_angle < under:
+            raw = "UnderSlide"
+        elif prev_abs_angle >= target_min and abs_angle < target_min:
+            raw = "Exit"
+        elif (
+            target_min <= abs_angle <= target_max
+            and angle_score > 0.8
+            and speed_score > 0.45
+            and stability_score > 0.45
+        ):
+            raw = "SlideGood"
+        else:
+            raw = "Slide"
 
-    if stability_score < 0.30:
-        return "Unstable"
-    if abs_angle > over and speed_delta_kmh_per_sec < -6.0:
-        return "OverSlide"
-    if abs_angle < under:
-        if abs_angle > prev_abs_angle + 0.3:
-            return "Entry"
-        return "UnderSlide"
-    if prev_abs_angle > target_min and abs_angle < target_min and abs_angle < prev_abs_angle:
-        return "Exit"
-    if (
-        target_min <= abs_angle <= target_max
-        and angle_score > 0.8
-        and speed_score > 0.45
-        and stability_score > 0.45
-    ):
-        return "SlideGood"
-    return "Slide"
+    # Apply hysteresis
+    if raw != _g_last_state:
+        if raw != _g_pending_state:
+            _g_pending_state = raw
+            _g_state_timer = 0
+        else:
+            _g_state_timer += 1
+            if _g_state_timer >= STATE_HYSTERESIS_FRAMES:
+                _g_last_state = raw
+                _g_pending_state = ""
+                _g_state_timer = 0
+    else:
+        _g_pending_state = ""
+        _g_state_timer = 0
+
+    return _g_last_state
 
 
 def evaluate_frame(frame_input: FrameInput, config: CoreConfig) -> FrameOutput:
@@ -581,6 +607,22 @@ def select_ghost_file(ghost_arg: str, ghost_dir: str) -> str:
     return os.path.abspath(candidates[idx - 1])
 
 
+def coaching_hint(slide_state: str) -> str:
+    if slide_state == "UnderSlide":
+        return "MORE ANGLE"
+    if slide_state == "OverSlide":
+        return "LESS ANGLE"
+    if slide_state == "SlideGood":
+        return "HOLD"
+    if slide_state == "Unstable":
+        return "STABILIZE"
+    if slide_state == "Entry":
+        return "ENTERING"
+    if slide_state == "Exit":
+        return "EXITING"
+    return ""
+
+
 def render_frame(
     frame_idx: int,
     total_frames: int,
@@ -611,6 +653,9 @@ def render_frame(
         print(" " + angle_zone_bar(frame_output.smooth_angle_deg, meter_max_angle_deg, 41))
         print(" " + build_meter_scale_label(meter_max_angle_deg, half_width))
         print(" " + build_meter_bar(frame_output.smooth_angle_deg, meter_max_angle_deg, half_width))
+        hint = coaching_hint(frame_output.slide_state)
+        if hint:
+            print(f" Hint: {hint}")
         print(" Trend Angle: " + build_trend_line(angle_history, -meter_max_angle_deg, meter_max_angle_deg, 32))
         print(" Trend Eff  : " + build_trend_line(efficiency_history, 0.0, 100.0, 32))
     else:
@@ -633,6 +678,9 @@ def render_frame(
         print(f" Speed: {ghost_frame.speed_kmh:6.2f} km/h | dSpeed {frame_output.smooth_speed_delta_kmh_per_sec:+7.2f} km/h/s")
         print(f" Slip:  raw {ghost_frame.lateral_slip:6.3f} | smooth {frame_output.smooth_lateral_slip:6.3f}")
         print(f" Osc:   {frame_output.angle_oscillation_deg_per_sec:6.1f} deg/s | Confidence {frame_output.confidence:5.3f}")
+        hint = coaching_hint(frame_output.slide_state)
+        if hint:
+            print(f" Hint: {hint}")
         print()
         print(" Trend Angle  : " + build_trend_line(angle_history, -meter_max_angle_deg, meter_max_angle_deg, 40))
         print(" Trend Eff(%) : " + build_trend_line(efficiency_history, 0.0, 100.0, 40))
